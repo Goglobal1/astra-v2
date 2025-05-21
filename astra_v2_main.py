@@ -25,8 +25,6 @@ redis_client = redis.Redis(
     ssl=True
 )
 
-)
-
 app = Flask(__name__)
 
 HISTORY_KEY_PREFIX = "astra-session:"
