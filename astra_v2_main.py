@@ -29,19 +29,16 @@ app = Flask(__name__)
 
 HISTORY_KEY_PREFIX = "astra-session:"
 
-
 def get_history(session_id):
     key = HISTORY_KEY_PREFIX + session_id
     return json.loads(redis_client.get(key) or "[]")
-
 
 def save_history(session_id, history):
     key = HISTORY_KEY_PREFIX + session_id
     redis_client.set(key, json.dumps(history), ex=3600)
 
-
 def detect_tone(user_input):
-    prompt = f"Classify the tone of this user message into one of the following: 'technical', 'casual', 'formal', 'urgent', 'emotional', or 'neutral'.\\nMessage: {user_input}"
+    prompt = f"Classify the tone of this user message into one of the following: 'technical', 'casual', 'formal', 'urgent', 'emotional', or 'neutral'.\nMessage: {user_input}"
     try:
         result = openai.chat.completions.create(
             model="gpt-4o",
@@ -57,7 +54,6 @@ def detect_tone(user_input):
         print(f"Tone detection error: {e}")
         return "neutral"
 
-
 def generate_system_prompt(tone):
     base = "You are Astra, the Executive AI of DiviScanOS."
     style = {
@@ -70,13 +66,11 @@ def generate_system_prompt(tone):
     }
     return base + style.get(tone, style["neutral"])
 
-
 def format_ssml(text):
     lines = text.split(". ")
     tagged = [f"<s>{line.strip()}.</s>" for line in lines if line.strip()]
-    ssml = "<speak>\\n<prosody rate='medium'>\\n" + "\\n<break time='500ms'/>\\n".join(tagged) + "\\n</prosody>\\n</speak>"
+    ssml = "<speak>\n<prosody rate='medium'>\n" + "\n<break time='500ms'/>\n".join(tagged) + "\n</prosody>\n</speak>"
     return ssml
-
 
 def is_vague(text):
     text = text.lower()
@@ -86,11 +80,9 @@ def is_vague(text):
     ]
     return any(phrase in text for phrase in vague_phrases)
 
-
 @app.route("/healthz", methods=["GET"])
 def health_check():
     return "OK", 200
-
 
 @app.route("/astra", methods=["POST"])
 def astra_reply():
@@ -106,9 +98,30 @@ def astra_reply():
     tone = detect_tone(question)
     system_prompt = generate_system_prompt(tone)
 
+    # Search Pinecone first
+    embed = openai.embeddings.create(
+        input=[question],
+        model="text-embedding-3-large"
+    )
+    vector = embed.data[0].embedding
+
+    results = index.query(
+        vector=vector,
+        top_k=1,
+        include_metadata=True,
+        namespace=namespace
+    )
+
+    pinecone_memory = None
+    if results.matches and results.matches[0].score > 0.75:
+        pinecone_memory = results.matches[0].metadata.get("text", "")
+
     messages = [{"role": "system", "content": system_prompt}]
     messages += history[-6:]
-    messages.append({"role": "user", "content": question})
+    if pinecone_memory:
+        messages.append({"role": "user", "content": f"Question: {question}\nRelevant Info: {pinecone_memory}"})
+    else:
+        messages.append({"role": "user", "content": question})
 
     try:
         completion = openai.chat.completions.create(
@@ -120,7 +133,7 @@ def astra_reply():
         reply_text = completion.choices[0].message.content.strip()
 
         if is_vague(reply_text):
-            clarification_prompt = f"The previous answer was too vague. Please restate with more precision, examples, or technical clarity.\\nUser question: {question}"
+            clarification_prompt = f"The previous answer was too vague. Please restate with more precision, examples, or technical clarity.\nUser question: {question}"
             messages.append({"role": "assistant", "content": reply_text})
             messages.append({"role": "user", "content": clarification_prompt})
             completion_retry = openai.chat.completions.create(
@@ -148,9 +161,7 @@ def astra_reply():
         print(f"Error in GPT: {e}")
         return jsonify({"response": "Astra encountered an issue. Please try again."})
 
-
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
 
 
