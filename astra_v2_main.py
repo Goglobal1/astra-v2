@@ -151,9 +151,6 @@ def astra_reply():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-"""
 
-with open("/mnt/data/astra_v2_main.py", "w") as f:
-    f.write(astra_code)
 
-"/mnt/data/astra_v2_main.py"
+
