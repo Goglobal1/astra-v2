@@ -1,16 +1,12 @@
-# astra_v2_main.py
-# Phase 1–5: Memory + Tone + SSML + Self-Correction + Vapi Phone Integration
-
+# astra_v2_main.py (Phase 3.1 – OpenAI primary, Pinecone fallback, all other features retained)
 from flask import Flask, request, jsonify
-import openai
-import os
-import json
-import redis
+import openai, os, json, redis
 from pinecone import Pinecone
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
+
+# API Keys
 openai.api_key = os.environ['OPENAI_API_KEY']
 pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
 index = pc.Index(os.environ.get("PINECONE_INDEX"))
@@ -26,59 +22,61 @@ redis_client = redis.Redis(
 )
 
 app = Flask(__name__)
-
 HISTORY_KEY_PREFIX = "astra-session:"
 
 def get_history(session_id):
-    key = HISTORY_KEY_PREFIX + session_id
-    return json.loads(redis_client.get(key) or "[]")
+    return json.loads(redis_client.get(HISTORY_KEY_PREFIX + session_id) or "[]")
 
 def save_history(session_id, history):
-    key = HISTORY_KEY_PREFIX + session_id
-    redis_client.set(key, json.dumps(history), ex=3600)
+    redis_client.set(HISTORY_KEY_PREFIX + session_id, json.dumps(history), ex=3600)
 
 def detect_tone(user_input):
-    prompt = f"Classify the tone of this user message into one of the following: 'technical', 'casual', 'formal', 'urgent', 'emotional', or 'neutral'.\nMessage: {user_input}"
     try:
         result = openai.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "You are an NLP assistant for tone detection."},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": "Classify the tone into: 'technical', 'casual', 'formal', 'urgent', 'emotional', or 'neutral'."},
+                {"role": "user", "content": f"Tone of this message: {user_input}"}
             ],
             temperature=0.3,
             max_tokens=20
         )
         return result.choices[0].message.content.strip().lower()
-    except Exception as e:
-        print(f"Tone detection error: {e}")
+    except:
         return "neutral"
 
 def generate_system_prompt(tone):
     base = "You are Astra, the Executive AI of DiviScanOS."
     style = {
-        "technical": " Use concise, high-precision language. Be data-driven and explicit.",
-        "casual": " Keep it light and friendly. Use informal language where appropriate.",
-        "formal": " Speak professionally and respectfully. Use polished and articulate language.",
-        "urgent": " Prioritize clarity and actionability. Respond directly and assertively.",
-        "emotional": " Be empathetic and reassuring. Use supportive language.",
-        "neutral": " Provide clear and informative responses."
+        "technical": " Use precise and data-driven language.",
+        "casual": " Keep it light and friendly.",
+        "formal": " Speak with professionalism.",
+        "urgent": " Be direct and actionable.",
+        "emotional": " Show empathy and reassurance.",
+        "neutral": " Be clear and informative."
     }
     return base + style.get(tone, style["neutral"])
 
 def format_ssml(text):
     lines = text.split(". ")
     tagged = [f"<s>{line.strip()}.</s>" for line in lines if line.strip()]
-    ssml = "<speak>\n<prosody rate='medium'>\n" + "\n<break time='500ms'/>\n".join(tagged) + "\n</prosody>\n</speak>"
-    return ssml
+    return "<speak><prosody rate='medium'>" + "<break time='500ms'/>".join(tagged) + "</prosody></speak>"
 
 def is_vague(text):
-    text = text.lower()
-    vague_phrases = [
-        "i'm not sure", "as an ai", "i don't know", "can't help with that", "uncertain", "unclear",
-        "my training data", "no definitive answer", "beyond my knowledge"
-    ]
-    return any(phrase in text for phrase in vague_phrases)
+    phrases = ["i'm not sure", "as an ai", "i don't know", "uncertain", "no definitive answer"]
+    return any(p in text.lower() for p in phrases)
+
+def fallback_from_pinecone(query):
+    try:
+        embed = openai.embeddings.create(input=[query], model="text-embedding-3-large")
+        vector = embed.data[0].embedding
+        results = index.query(vector=vector, top_k=1, include_metadata=True, namespace=namespace)
+        if results.matches:
+            return results.matches[0].metadata.get("text", "")
+        return ""
+    except Exception as e:
+        print(f"Pinecone fallback error: {e}")
+        return ""
 
 @app.route("/healthz", methods=["GET"])
 def health_check():
@@ -97,68 +95,35 @@ def astra_reply():
     history = get_history(session_id)
     tone = detect_tone(question)
     system_prompt = generate_system_prompt(tone)
-
-    # Search Pinecone first
-    embed = openai.embeddings.create(
-        input=[question],
-        model="text-embedding-3-large"
-    )
-    vector = embed.data[0].embedding
-
-    results = index.query(
-        vector=vector,
-        top_k=1,
-        include_metadata=True,
-        namespace=namespace
-    )
-
-    pinecone_memory = None
-    if results.matches and results.matches[0].score > 0.75:
-        pinecone_memory = results.matches[0].metadata.get("text", "")
-
-    messages = [{"role": "system", "content": system_prompt}]
-    messages += history[-6:]
-    if pinecone_memory:
-        messages.append({"role": "user", "content": f"Question: {question}\nRelevant Info: {pinecone_memory}"})
-    else:
-        messages.append({"role": "user", "content": question})
+    messages = [{"role": "system", "content": system_prompt}] + history[-6:] + [{"role": "user", "content": question}]
 
     try:
-        completion = openai.chat.completions.create(
+        response = openai.chat.completions.create(
             model="gpt-4o",
             messages=messages,
             temperature=0.6,
             max_tokens=1000
         )
-        reply_text = completion.choices[0].message.content.strip()
+        reply = response.choices[0].message.content.strip()
 
-        if is_vague(reply_text):
-            clarification_prompt = f"The previous answer was too vague. Please restate with more precision, examples, or technical clarity.\nUser question: {question}"
-            messages.append({"role": "assistant", "content": reply_text})
-            messages.append({"role": "user", "content": clarification_prompt})
-            completion_retry = openai.chat.completions.create(
-                model="gpt-4o",
-                messages=messages,
-                temperature=0.6,
-                max_tokens=1000
-            )
-            reply_text = completion_retry.choices[0].message.content.strip()
+        if is_vague(reply):
+            pinecone_fallback = fallback_from_pinecone(question)
+            if pinecone_fallback:
+                reply = pinecone_fallback
 
-        reply_ssml = format_ssml(reply_text) if for_voice else None
-
-        history.append({"role": "user", "content": question})
-        history.append({"role": "assistant", "content": reply_text})
+        reply_ssml = format_ssml(reply) if for_voice else None
+        history += [{"role": "user", "content": question}, {"role": "assistant", "content": reply}]
         save_history(session_id, history)
 
         return jsonify({
-            "response": reply_text,
+            "response": reply,
             "ssml": reply_ssml,
             "tone": tone,
             "voice_ready": for_voice
         })
 
     except Exception as e:
-        print(f"Error in GPT: {e}")
+        print(f"Error generating response: {e}")
         return jsonify({"response": "Astra encountered an issue. Please try again."})
 
 if __name__ == "__main__":
