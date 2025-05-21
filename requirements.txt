@@ -2,4 +2,4 @@ flask
 openai
 python-dotenv
 redis
-pinecone-client
+pinecone
