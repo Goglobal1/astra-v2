@@ -1,0 +1,50 @@
+# Rewriting the Pinecone upload script using the correct structure and data reference from the playbook entry
+playbook_entry = playbook_content[0]  # Use the first (and only) item in the list
+
+# Build the script dynamically
+pinecone_upload_script = f"""
+import openai
+import os
+import json
+from pinecone import Pinecone
+from dotenv import load_dotenv
+
+# Load .env if needed
+load_dotenv()
+
+openai.api_key = os.getenv("OPENAI_API_KEY")
+pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+index = pc.Index("astra-brain-prod")
+
+# Define the playbook content
+summary_text = {json.dumps(playbook_entry["answer"])}
+
+# Generate embedding for the entire summary
+embedding = openai.embeddings.create(
+    input=[summary_text],
+    model="text-embedding-3-large"
+).data[0].embedding
+
+# Upsert into Pinecone
+index.upsert(
+    vectors=[{{
+        "id": "astra-playbook-2025",
+        "values": embedding,
+        "metadata": {{
+            "text": summary_text,
+            "source": "astra-playbook",
+            "topic": "executive-logic"
+        }}
+    }}],
+    namespace="astra-brain-v1"
+)
+
+print("✅ Astra Playbook uploaded to Pinecone")
+"""
+
+# Save the script
+script_path = "/mnt/data/upload_astra_playbook_fixed.py"
+with open(script_path, "w") as f:
+    f.write(pinecone_upload_script)
+
+script_path
