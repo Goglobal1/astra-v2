@@ -1,4 +1,5 @@
-# astra_v2_main.py (Phase 3.1 – OpenAI primary, Pinecone fallback, all other features retained)
+# astra_v2_main.py – Phase 3.2 Fix: OpenAI + Pinecone + Anti-Vague
+
 from flask import Flask, request, jsonify
 import openai, os, json, redis
 from pinecone import Pinecone
@@ -63,8 +64,11 @@ def format_ssml(text):
     return "<speak><prosody rate='medium'>" + "<break time='500ms'/>".join(tagged) + "</prosody></speak>"
 
 def is_vague(text):
-    phrases = ["i'm not sure", "as an ai", "i don't know", "uncertain", "no definitive answer"]
-    return any(p in text.lower() for p in phrases)
+    vague_signals = [
+        "i'm not sure", "as an ai", "i don't know", "uncertain",
+        "no definitive answer", "let me check", "give me a moment", "double check that for you"
+    ]
+    return any(p in text.lower() for p in vague_signals)
 
 def fallback_from_pinecone(query):
     try:
@@ -75,7 +79,7 @@ def fallback_from_pinecone(query):
             return results.matches[0].metadata.get("text", "")
         return ""
     except Exception as e:
-        print(f"Pinecone fallback error: {e}")
+        print(f"[PINECONE FALLBACK ERROR]: {e}")
         return ""
 
 @app.route("/healthz", methods=["GET"])
@@ -95,6 +99,8 @@ def astra_reply():
     history = get_history(session_id)
     tone = detect_tone(question)
     system_prompt = generate_system_prompt(tone)
+
+    # Build messages
     messages = [{"role": "system", "content": system_prompt}] + history[-6:] + [{"role": "user", "content": question}]
 
     try:
@@ -107,12 +113,14 @@ def astra_reply():
         reply = response.choices[0].message.content.strip()
 
         if is_vague(reply):
-            pinecone_fallback = fallback_from_pinecone(question)
-            if pinecone_fallback:
-                reply = pinecone_fallback
+            print("[LOG] Vague response detected. Triggering Pinecone fallback.")
+            pinecone_memory = fallback_from_pinecone(question)
+            if pinecone_memory:
+                reply = pinecone_memory
+            else:
+                reply = "I'm still retrieving your answer. A follow-up may be needed — can you rephrase?"
 
-        reply_ssml = format_ssml(reply) if for_voice and reply else None
-
+        reply_ssml = format_ssml(reply) if for_voice else None
         history += [{"role": "user", "content": question}, {"role": "assistant", "content": reply}]
         save_history(session_id, history)
 
@@ -124,7 +132,7 @@ def astra_reply():
         })
 
     except Exception as e:
-        print(f"Error generating response: {e}")
+        print(f"[OPENAI ERROR]: {e}")
         return jsonify({"response": "Astra encountered an issue. Please try again."})
 
 if __name__ == "__main__":
