@@ -1,14 +1,16 @@
-# astra_v2_main.py (Phase 3.3 – Optimized for Voice Stability + Assertive Tone + Smart Chunking)
+from textwrap import dedent
+
+# Generate the Phase 3.4 patch code as a complete string
+phase_3_4_patch = dedent("""
+# astra_v2_main.py (Phase 3.4 – Enhanced Voice Buffering, Chunking, and Assertive Response Handling)
 
 from flask import Flask, request, jsonify
-import openai, os, json, redis
+import openai, os, json, redis, time
 from pinecone import Pinecone
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
-# API Keys & Services
 openai.api_key = os.environ['OPENAI_API_KEY']
 pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
 index = pc.Index(os.environ.get("PINECONE_INDEX"))
@@ -60,9 +62,10 @@ def generate_system_prompt(tone):
     return base + style.get(tone, style["neutral"])
 
 def format_ssml(text):
-    chunks = text.split(". ")
-    tagged = [f"<s>{line.strip()}.</s>" for line in chunks if line.strip()]
-    return "<speak><prosody rate='medium'>" + "<break time='500ms'/>".join(tagged) + "</prosody></speak>"
+    lines = text.split(". ")
+    tagged = [f"<s>{line.strip()}.</s>" for line in lines if line.strip()]
+    ssml = "<speak><prosody rate='medium'>" + "<break time='750ms'/>".join(tagged) + "</prosody></speak>"
+    return ssml
 
 def is_vague(text):
     phrases = [
@@ -100,6 +103,7 @@ def astra_reply():
     history = get_history(session_id)
     tone = detect_tone(question)
     system_prompt = generate_system_prompt(tone)
+
     messages = [{"role": "system", "content": system_prompt}] + history[-6:] + [{"role": "user", "content": question}]
 
     try:
@@ -115,12 +119,11 @@ def astra_reply():
             fallback_text = fallback_from_pinecone(question)
             reply_text = fallback_text if fallback_text else "Let's revisit this shortly with the correct intel."
 
+        # Delay buffer before sending SSML to Vapi
+        time.sleep(1.5)
         reply_ssml = format_ssml(reply_text) if for_voice else None
 
-        history += [
-            {"role": "user", "content": question},
-            {"role": "assistant", "content": reply_text}
-        ]
+        history += [{"role": "user", "content": question}, {"role": "assistant", "content": reply_text}]
         save_history(session_id, history)
 
         return jsonify({
@@ -136,7 +139,6 @@ def astra_reply():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+""")
 
-
-
-
+phase_3_4_patch[:2000]  # show the beginning for validation
