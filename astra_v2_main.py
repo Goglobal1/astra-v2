@@ -1,13 +1,14 @@
-# astra_v2_main.py – Phase 3.2 Fix: OpenAI + Pinecone + Anti-Vague
+# astra_v2_main.py (Phase 3.3 – Optimized for Voice Stability + Assertive Tone + Smart Chunking)
 
 from flask import Flask, request, jsonify
 import openai, os, json, redis
 from pinecone import Pinecone
 from dotenv import load_dotenv
 
+# Load environment variables
 load_dotenv()
 
-# API Keys
+# API Keys & Services
 openai.api_key = os.environ['OPENAI_API_KEY']
 pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
 index = pc.Index(os.environ.get("PINECONE_INDEX"))
@@ -59,16 +60,16 @@ def generate_system_prompt(tone):
     return base + style.get(tone, style["neutral"])
 
 def format_ssml(text):
-    lines = text.split(". ")
-    tagged = [f"<s>{line.strip()}.</s>" for line in lines if line.strip()]
+    chunks = text.split(". ")
+    tagged = [f"<s>{line.strip()}.</s>" for line in chunks if line.strip()]
     return "<speak><prosody rate='medium'>" + "<break time='500ms'/>".join(tagged) + "</prosody></speak>"
 
 def is_vague(text):
-    vague_signals = [
+    phrases = [
         "i'm not sure", "as an ai", "i don't know", "uncertain",
-        "no definitive answer", "let me check", "give me a moment", "double check that for you"
+        "let me check", "give me a moment", "can't help", "might be", "possibly"
     ]
-    return any(p in text.lower() for p in vague_signals)
+    return any(p in text.lower() for p in phrases)
 
 def fallback_from_pinecone(query):
     try:
@@ -79,7 +80,7 @@ def fallback_from_pinecone(query):
             return results.matches[0].metadata.get("text", "")
         return ""
     except Exception as e:
-        print(f"[PINECONE FALLBACK ERROR]: {e}")
+        print(f"Pinecone fallback error: {e}")
         return ""
 
 @app.route("/healthz", methods=["GET"])
@@ -99,8 +100,6 @@ def astra_reply():
     history = get_history(session_id)
     tone = detect_tone(question)
     system_prompt = generate_system_prompt(tone)
-
-    # Build messages
     messages = [{"role": "system", "content": system_prompt}] + history[-6:] + [{"role": "user", "content": question}]
 
     try:
@@ -110,33 +109,34 @@ def astra_reply():
             temperature=0.6,
             max_tokens=1000
         )
-        reply = response.choices[0].message.content.strip()
+        reply_text = response.choices[0].message.content.strip()
 
-        if is_vague(reply):
-            print("[LOG] Vague response detected. Triggering Pinecone fallback.")
-            pinecone_memory = fallback_from_pinecone(question)
-            if pinecone_memory:
-                reply = pinecone_memory
-            else:
-                reply = "I'm still retrieving your answer. A follow-up may be needed — can you rephrase?"
+        if is_vague(reply_text):
+            fallback_text = fallback_from_pinecone(question)
+            reply_text = fallback_text if fallback_text else "Let's revisit this shortly with the correct intel."
 
-        reply_ssml = format_ssml(reply) if for_voice else None
-        history += [{"role": "user", "content": question}, {"role": "assistant", "content": reply}]
+        reply_ssml = format_ssml(reply_text) if for_voice else None
+
+        history += [
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": reply_text}
+        ]
         save_history(session_id, history)
 
         return jsonify({
-            "response": reply,
+            "response": reply_text,
             "ssml": reply_ssml,
             "tone": tone,
             "voice_ready": for_voice
         })
 
     except Exception as e:
-        print(f"[OPENAI ERROR]: {e}")
+        print(f"Error generating response: {e}")
         return jsonify({"response": "Astra encountered an issue. Please try again."})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
