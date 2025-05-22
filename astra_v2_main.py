@@ -111,7 +111,7 @@ def astra_reply():
             if pinecone_fallback:
                 reply = pinecone_fallback
 
-       reply_ssml = None
+        reply_ssml = format_ssml(reply) if for_voice else None
         history += [{"role": "user", "content": question}, {"role": "assistant", "content": reply}]
         save_history(session_id, history)
 
@@ -128,5 +128,6 @@ def astra_reply():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
