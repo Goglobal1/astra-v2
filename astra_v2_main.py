@@ -1,11 +1,10 @@
-# astra_v2_main.py (Phase 4.0 – Seamless Conversational Voice AI with Streaming, Fallback, and Playbook Loading)
+# astra_v2_main.py (Phase 4.1 – Stable Flask App for Vapi + ElevenLabs)
 
 from flask import Flask, request, jsonify
 import openai, os, json, redis, time
 from pinecone import Pinecone
 from dotenv import load_dotenv
 
-# Load env variables
 load_dotenv()
 
 openai.api_key = os.environ['OPENAI_API_KEY']
@@ -64,10 +63,7 @@ def format_ssml(text):
     return "<speak><prosody rate='medium'>" + "<break time='750ms'/>".join(tagged) + "</prosody></speak>"
 
 def is_vague(text):
-    phrases = [
-        "i'm not sure", "as an ai", "i don't know", "uncertain",
-        "let me check", "give me a moment", "can't help", "might be", "possibly"
-    ]
+    phrases = ["i'm not sure", "as an ai", "i don't know", "uncertain", "let me check", "give me a moment", "can't help", "might be", "possibly"]
     return any(p in text.lower() for p in phrases)
 
 def fallback_from_pinecone(query):
@@ -81,8 +77,6 @@ def fallback_from_pinecone(query):
     except Exception as e:
         print(f"Pinecone fallback error: {e}")
         return ""
-
-# === Flask routes ===
 
 @app.route("/healthz", methods=["GET"])
 def health_check():
@@ -117,8 +111,7 @@ def astra_reply():
             fallback_text = fallback_from_pinecone(question)
             reply_text = fallback_text if fallback_text else "Let's revisit this shortly with the correct intel."
 
-        # Add delay before speaking
-        time.sleep(1.5)
+        time.sleep(1.5)  # Ensure SSML loads properly before Vapi streams
         reply_ssml = format_ssml(reply_text) if for_voice else None
 
         history += [{"role": "user", "content": question}, {"role": "assistant", "content": reply_text}]
@@ -137,5 +130,3 @@ def astra_reply():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
-
